@@ -46,6 +46,9 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
   // modules off pi's startup import path.
   let loaded: LoadedFooter | undefined;
   let loadPromise: Promise<void> | undefined;
+  // A failed deferred load notifies the user once per session; later retries stay silent
+  // because the footer reappearing is the recovery signal.
+  let loadFailureNotified = false;
   const eventWidgets = new EventWidgetValues();
   let liveTextVerbosity: string | undefined;
   let renderCurrentFooter: (() => void) | undefined;
@@ -57,7 +60,26 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
       const cfg = await mod.loadConfig();
       loaded = { mod, config: cfg, store: mod.WidgetStore.fromConfig(cfg) };
     })();
-    return loadPromise;
+    const attempt = loadPromise;
+    // Re-throw the failure while clearing the cached promise so a later render tick
+    // or /footer retries the load instead of staying broken for the rest of the session.
+    return attempt.catch((error: unknown) => {
+      if (loadPromise === attempt) loadPromise = undefined;
+      throw error;
+    });
+  }
+
+  function formatLoadError(error: unknown): string {
+    return `pi-footer: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  function notifyLoadFailure(
+    error: unknown,
+    ctx: ExtensionContext | ExtensionCommandContext,
+  ): void {
+    if (loadFailureNotified) return;
+    loadFailureNotified = true;
+    ctx.ui.notify(formatLoadError(error), "error");
   }
 
   function clearFooter(ctx: ExtensionContext | ExtensionCommandContext): void {
@@ -74,16 +96,17 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
       dispose(): void {},
       invalidate(): void {},
       render(): string[] {
+        // While the load is failed, boot is cleared by the catch below, so each render
+        // tick retries the deferred load until it succeeds and the real footer replaces
+        // this shell.
         boot ??= loadDeferred()
           .then(() => {
             apply(ctx);
             tui.requestRender();
           })
           .catch((error: unknown) => {
-            ctx.ui.notify(
-              `pi-footer: ${error instanceof Error ? error.message : String(error)}`,
-              "error",
-            );
+            boot = undefined;
+            notifyLoadFailure(error, ctx);
           });
         return [];
       },
@@ -186,7 +209,14 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
   pi.registerCommand("footer", {
     description: "Configure the pi statusline/footer",
     handler: async (args, ctx) => {
-      await loadDeferred();
+      try {
+        await loadDeferred();
+      } catch (error: unknown) {
+        // An explicit /footer invocation always gets feedback about the failed load,
+        // even when a render-tick failure already notified this session.
+        ctx.ui.notify(formatLoadError(error), "error");
+        return;
+      }
       const state = loaded;
       if (!state) return;
 
@@ -226,9 +256,11 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    loadFailureNotified = false;
     // Before the first footer render the config loads on first render. If the load is
-    // already in flight, wait for it so the reload below is not skipped.
-    if (loadPromise && !loaded) await loadPromise;
+    // already in flight, wait for it so the reload below is not skipped; a failed load
+    // just leaves the shell footer in place for a render tick to retry.
+    if (loadPromise && !loaded) await loadDeferred().catch(() => {});
     const state = loaded;
     if (state) replaceConfig(state, await state.mod.loadConfig());
     apply(ctx);
