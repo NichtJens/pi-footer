@@ -23,7 +23,6 @@ import { EMPTY_GIT_INFO, getGitInfo, hasEnabledGitWidgets, loadGitInfo } from ".
 import { collectSessionMetrics, collectTurnMetrics } from "./metrics.ts";
 import { renderStatuslines } from "./render.ts";
 import { isRecord, type GitInfo, type StatuslineConfig, type StatuslineData } from "./types.ts";
-import { openStatuslineConfigUi } from "./ui.ts";
 import { WidgetStore } from "./widgets/store.ts";
 
 // Structural mirror of pi's footerData — collectStatuslineData only needs the branch getter.
@@ -139,6 +138,9 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
           textVerbosity: liveTextVerbosity,
         },
       );
+      // The config UI screen tree is imported on demand so the extension's startup
+      // import graph stays small; arg commands above never reach this point.
+      const { openStatuslineConfigUi } = await import("./ui.ts");
       const result = await openStatuslineConfigUi(
         ctx,
         config,
