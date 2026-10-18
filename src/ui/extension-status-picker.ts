@@ -1,6 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
-import { STATUS_KEY } from "../config.ts";
+import { STATUS_KEY } from "../types.ts";
 import {
   allExtensionStatusEntries,
   type ExtensionStatusRowConfig,

@@ -5,15 +5,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
-import {
-  cloneConfig,
-  configWithPreset,
-  DEFAULT_CONFIG,
-  isPreset,
-  loadConfig,
-  saveConfig,
-  STATUS_KEY,
-} from "./config.ts";
 import { EventWidgetValues, UPDATE_EVENT_WIDGET_EVENT } from "./event-widgets.ts";
 import {
   EMPTY_EXTENSION_STATUSES,
@@ -21,9 +12,28 @@ import {
 } from "./extension-statuses.ts";
 import { EMPTY_GIT_INFO, getGitInfo, hasEnabledGitWidgets, loadGitInfo } from "./git.ts";
 import { collectSessionMetrics, collectTurnMetrics } from "./metrics.ts";
-import { renderStatuslines } from "./render.ts";
-import { isRecord, type GitInfo, type StatuslineConfig, type StatuslineData } from "./types.ts";
-import { WidgetStore } from "./widgets/store.ts";
+import {
+  isRecord,
+  STATUS_KEY,
+  type GitInfo,
+  type StatuslineConfig,
+  type StatuslineData,
+} from "./types.ts";
+import type { WidgetStore } from "./widgets/store.ts";
+
+import type * as FooterModulesModule from "./deferred.ts";
+
+// The deferred part of the extension: every module that transitively imports the widget
+// registry, re-exported through a single entry point.
+type FooterModules = typeof FooterModulesModule;
+
+// Populated together on the first footer render or /footer, so a non-undefined value is the
+// single loaded-or-not check.
+interface LoadedFooter {
+  mod: FooterModules;
+  config: StatuslineConfig;
+  store: WidgetStore;
+}
 
 // Structural mirror of pi's footerData — collectStatuslineData only needs the branch getter.
 interface FooterDataLike {
@@ -31,17 +41,67 @@ interface FooterDataLike {
 }
 
 export default async function statuslineExtension(pi: ExtensionAPI): Promise<void> {
-  let config = await loadConfig();
-  let widgetStore = WidgetStore.fromConfig(config);
+  // The widget registry (and everything that imports it: config normalization, the widget
+  // store, and the renderer) loads on first footer render or /footer, keeping the widget
+  // modules off pi's startup import path.
+  let loaded: LoadedFooter | undefined;
+  let loadPromise: Promise<void> | undefined;
   const eventWidgets = new EventWidgetValues();
   let liveTextVerbosity: string | undefined;
   let renderCurrentFooter: (() => void) | undefined;
   let getExtensionStatuses = (): ReadonlyMap<string, string> => EMPTY_EXTENSION_STATUSES;
 
+  function loadDeferred(): Promise<void> {
+    loadPromise ??= (async () => {
+      const mod = await import("./deferred.ts");
+      const cfg = await mod.loadConfig();
+      loaded = { mod, config: cfg, store: mod.WidgetStore.fromConfig(cfg) };
+    })();
+    return loadPromise;
+  }
+
+  function clearFooter(ctx: ExtensionContext | ExtensionCommandContext): void {
+    ctx.ui.setFooter(undefined);
+    ctx.ui.setStatus(STATUS_KEY, undefined);
+  }
+
+  // Registers a footer that renders nothing until the deferred modules have loaded. The first
+  // render starts the load; once it finishes, the real footer is re-registered so the next
+  // frame shows it.
+  function registerShellFooter(ctx: ExtensionContext | ExtensionCommandContext): void {
+    let boot: Promise<void> | undefined;
+    ctx.ui.setFooter((tui) => ({
+      dispose(): void {},
+      invalidate(): void {},
+      render(): string[] {
+        boot ??= loadDeferred()
+          .then(() => {
+            apply(ctx);
+            tui.requestRender();
+          })
+          .catch((error: unknown) => {
+            ctx.ui.notify(
+              `pi-footer: ${error instanceof Error ? error.message : String(error)}`,
+              "error",
+            );
+          });
+        return [];
+      },
+    }));
+  }
+
   function apply(ctx: ExtensionContext | ExtensionCommandContext): void {
-    if (!ctx.hasUI || !config.enabled) {
-      ctx.ui.setFooter(undefined);
-      ctx.ui.setStatus(STATUS_KEY, undefined);
+    if (!ctx.hasUI) {
+      clearFooter(ctx);
+      return;
+    }
+    const state = loaded;
+    if (!state) {
+      registerShellFooter(ctx);
+      return;
+    }
+    if (!state.config.enabled) {
+      clearFooter(ctx);
       return;
     }
 
@@ -59,11 +119,11 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
         invalidate(): void {},
         render(width: number): string[] {
           const data = collectStatuslineData(ctx, pi, footerData, eventWidgets.values, {
-            config,
+            config: state.config,
             requestRender: () => tui.requestRender(),
             textVerbosity: liveTextVerbosity,
           });
-          const lines = renderStatuslines(widgetStore, data, width, {
+          const lines = state.mod.renderStatuslines(state.store, data, width, {
             getExtensionStatuses,
             theme,
             requestRender: () => tui.requestRender(),
@@ -72,7 +132,7 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
 
           const statuses = visibleExtensionStatusRowEntries(
             footerData.getExtensionStatuses(),
-            config.extensionStatusRow.hiddenKeys,
+            state.config.extensionStatusRow.hiddenKeys,
             STATUS_KEY,
           ).map((entry) => entry.value);
           const renderedLines = lines.map((line) => truncateToWidth(line, width, "…"));
@@ -86,17 +146,21 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
     });
   }
 
-  function replaceConfig(next: StatuslineConfig): void {
-    config = next;
-    widgetStore = WidgetStore.fromConfig(config);
+  function replaceConfig(state: LoadedFooter, next: StatuslineConfig): void {
+    loaded = {
+      mod: state.mod,
+      config: next,
+      store: state.mod.WidgetStore.fromConfig(next),
+    };
   }
 
   async function setConfig(
+    state: LoadedFooter,
     next: StatuslineConfig,
     ctx: ExtensionContext | ExtensionCommandContext,
   ): Promise<void> {
-    replaceConfig(next);
-    await saveConfig(config);
+    replaceConfig(state, next);
+    await state.mod.saveConfig(next);
     apply(ctx);
   }
 
@@ -122,7 +186,11 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
   pi.registerCommand("footer", {
     description: "Configure the pi statusline/footer",
     handler: async (args, ctx) => {
-      const handled = await handleArgs(args, ctx, config, async (next) => setConfig(next, ctx));
+      await loadDeferred();
+      const state = loaded;
+      if (!state) return;
+
+      const handled = await handleArgs(args, ctx, state, (next) => setConfig(state, next, ctx));
       if (handled) return;
 
       const previewData = collectStatuslineData(
@@ -143,22 +211,26 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
       const { openStatuslineConfigUi } = await import("./ui.ts");
       const result = await openStatuslineConfigUi(
         ctx,
-        config,
+        state.config,
         previewData,
         (updated) => {
-          replaceConfig(updated);
+          replaceConfig(state, updated);
           apply(ctx);
         },
-        async (updated) => setConfig(updated, ctx),
+        (updated) => setConfig(state, updated, ctx),
         getExtensionStatuses,
       );
-      replaceConfig(result.config);
+      replaceConfig(state, result.config);
       apply(ctx);
     },
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    replaceConfig(await loadConfig());
+    // Before the first footer render the config loads on first render. If the load is
+    // already in flight, wait for it so the reload below is not skipped.
+    if (loadPromise && !loaded) await loadPromise;
+    const state = loaded;
+    if (state) replaceConfig(state, await state.mod.loadConfig());
     apply(ctx);
   });
 
@@ -170,8 +242,7 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
-    ctx.ui.setFooter(undefined);
-    ctx.ui.setStatus(STATUS_KEY, undefined);
+    clearFooter(ctx);
   });
 }
 
@@ -217,29 +288,29 @@ function collectStatuslineData(
 async function handleArgs(
   args: string,
   ctx: ExtensionCommandContext,
-  currentConfig: StatuslineConfig,
+  state: LoadedFooter,
   setConfig: (config: StatuslineConfig) => Promise<void>,
 ): Promise<boolean> {
   const [command, value] = args.trim().split(/\s+/, 2);
   if (!command) return false;
 
   if (command === "on" || command === "enable") {
-    await setConfig({ ...currentConfig, enabled: true });
+    await setConfig({ ...state.config, enabled: true });
     ctx.ui.notify("pi-footer enabled", "info");
     return true;
   }
   if (command === "off" || command === "disable") {
-    await setConfig({ ...currentConfig, enabled: false });
+    await setConfig({ ...state.config, enabled: false });
     ctx.ui.notify("pi-footer disabled", "info");
     return true;
   }
   if (command === "reset") {
-    await setConfig(cloneConfig(DEFAULT_CONFIG));
+    await setConfig(state.mod.cloneConfig(state.mod.DEFAULT_CONFIG));
     ctx.ui.notify("pi-footer reset to defaults", "info");
     return true;
   }
-  if (command === "preset" && isPreset(value)) {
-    await setConfig(configWithPreset(currentConfig, value));
+  if (command === "preset" && state.mod.isPreset(value)) {
+    await setConfig(state.mod.configWithPreset(state.config, value));
     ctx.ui.notify(`pi-footer preset: ${value}`, "info");
     return true;
   }

@@ -58,6 +58,9 @@ export interface StatuslineConfig extends StatuslineSettings {
 
 export const ICON_MODE_VALUES = ["emoji", "nerd", "text"] as const;
 
+// Key this extension uses for its entry in pi's statusline.
+export const STATUS_KEY = "pi-footer";
+
 export type IconMode = (typeof ICON_MODE_VALUES)[number];
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

@@ -28,8 +28,6 @@ import type {
 import { ICON_MODE_VALUES, isRecord, TERMINAL_WIDTH_MODE_VALUES } from "./types.ts";
 import { registry, type WidgetType } from "./widgets/registry.ts";
 
-export const STATUS_KEY = "pi-footer";
-
 const CONFIG_ENV = "PI_FOOTER_CONFIG";
 const DEFAULT_CONFIG_PATH = join(getAgentDir(), "extensions", "pi-footer.json");
 const SEPARATORS = new Set<SeparatorStyle>(SEPARATOR_VALUES);

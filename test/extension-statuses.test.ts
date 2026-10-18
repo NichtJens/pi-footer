@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { createHydratedWidgetForTest } from "./helpers/widgets.ts";
-import { DEFAULT_CONFIG, normalizeConfig, STATUS_KEY } from "../src/config.ts";
+import { DEFAULT_CONFIG, normalizeConfig } from "../src/config.ts";
+import { STATUS_KEY } from "../src/types.ts";
 import {
   allExtensionStatusEntries,
   EMPTY_STATUS_LABEL,
