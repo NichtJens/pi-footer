@@ -6,6 +6,7 @@ import type {
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
 import { EventWidgetValues, UPDATE_EVENT_WIDGET_EVENT } from "./event-widgets.ts";
+import { isConfigDisabled } from "./config-file.ts";
 import {
   EMPTY_EXTENSION_STATUSES,
   visibleExtensionStatusRowEntries,
@@ -46,6 +47,10 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
   // modules off pi's startup import path.
   let loaded: LoadedFooter | undefined;
   let loadPromise: Promise<void> | undefined;
+  // Set by the cheap enabled-flag pre-check when the config is disabled: the deferred
+  // load is skipped entirely and the footer stays cleared. Reset on session_start so a
+  // config re-enabled in a new session is picked up.
+  let disabled = false;
   // A failed deferred load notifies the user once per session; later retries stay silent
   // because the footer reappearing is the recovery signal.
   let loadFailureNotified = false;
@@ -87,9 +92,27 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
     ctx.ui.setStatus(STATUS_KEY, undefined);
   }
 
-  // Registers a footer that renders nothing until the deferred modules have loaded. The first
-  // render starts the load; once it finishes, the real footer is re-registered so the next
-  // frame shows it.
+  // Registers a footer that renders nothing until the deferred modules have loaded. The
+  // first render checks the enabled flag and either clears the footer (disabled config,
+  // no load) or starts the load; once the load finishes, the real footer is
+  // re-registered so the next frame shows it.
+  // The shell footer's first render: with a disabled config the footer is cleared and
+  // no widget module is ever imported for this session; otherwise the deferred load
+  // starts and the real footer replaces the shell once it finishes.
+  async function startShellBoot(
+    ctx: ExtensionContext | ExtensionCommandContext,
+    tui: { requestRender(): void },
+  ): Promise<void> {
+    if (await isConfigDisabled()) {
+      disabled = true;
+      apply(ctx);
+    } else {
+      await loadDeferred();
+      apply(ctx);
+    }
+    tui.requestRender();
+  }
+
   function registerShellFooter(ctx: ExtensionContext | ExtensionCommandContext): void {
     let boot: Promise<void> | undefined;
     ctx.ui.setFooter((tui) => ({
@@ -97,17 +120,11 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
       invalidate(): void {},
       render(): string[] {
         // While the load is failed, boot is cleared by the catch below, so each render
-        // tick retries the deferred load until it succeeds and the real footer replaces
-        // this shell.
-        boot ??= loadDeferred()
-          .then(() => {
-            apply(ctx);
-            tui.requestRender();
-          })
-          .catch((error: unknown) => {
-            boot = undefined;
-            notifyLoadFailure(error, ctx);
-          });
+        // tick retries until it succeeds and the real footer replaces this shell.
+        boot ??= startShellBoot(ctx, tui).catch((error: unknown) => {
+          boot = undefined;
+          notifyLoadFailure(error, ctx);
+        });
         return [];
       },
     }));
@@ -115,6 +132,11 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
 
   function apply(ctx: ExtensionContext | ExtensionCommandContext): void {
     if (!ctx.hasUI) {
+      clearFooter(ctx);
+      return;
+    }
+    // The cheap pre-check found a disabled config and the deferred load was never run.
+    if (!loaded && disabled) {
       clearFooter(ctx);
       return;
     }
@@ -257,6 +279,7 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
 
   pi.on("session_start", async (_event, ctx) => {
     loadFailureNotified = false;
+    disabled = false;
     // Before the first footer render the config loads on first render. If the load is
     // already in flight, wait for it so the reload below is not skipped; a failed load
     // just leaves the shell footer in place for a render tick to retry.

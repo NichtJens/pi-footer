@@ -1,7 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import type { ColorLevel } from "./colors.ts";
 import { COLOR_LEVEL_VALUES, normalizeColor } from "./colors.ts";
@@ -27,9 +25,10 @@ import type {
 } from "./types.ts";
 import { ICON_MODE_VALUES, isRecord, TERMINAL_WIDTH_MODE_VALUES } from "./types.ts";
 import { registry, type WidgetType } from "./widgets/registry.ts";
+import { getConfigPath, readConfigFile } from "./config-file.ts";
 
-const CONFIG_ENV = "PI_FOOTER_CONFIG";
-const DEFAULT_CONFIG_PATH = join(getAgentDir(), "extensions", "pi-footer.json");
+export { getConfigPath };
+
 const SEPARATORS = new Set<SeparatorStyle>(SEPARATOR_VALUES);
 
 const DEFAULT_TERMINAL_OPTIONS: TerminalOptions = {
@@ -50,10 +49,6 @@ export const DEFAULT_CONFIG: StatuslineConfig = {
   terminal: DEFAULT_TERMINAL_OPTIONS,
   extensionStatusRow: DEFAULT_EXTENSION_STATUS_ROW,
 };
-
-export function getConfigPath(): string {
-  return process.env[CONFIG_ENV] ?? DEFAULT_CONFIG_PATH;
-}
 
 function linesForPreset(preset: Preset): WidgetEntry[][] {
   return PRESET_DEFINITIONS[preset].lines.map((line) => widgetsFromPresetLine(line));
@@ -117,15 +112,7 @@ export function cloneConfig(config: StatuslineConfig): StatuslineConfig {
 }
 
 export async function loadConfig(path = getConfigPath()): Promise<StatuslineConfig> {
-  try {
-    const raw = await readFile(path, "utf8");
-    return normalizeConfig(JSON.parse(raw));
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return cloneConfig(DEFAULT_CONFIG);
-    }
-    throw error;
-  }
+  return normalizeConfig(await readConfigFile(path));
 }
 
 export async function saveConfig(config: StatuslineConfig, path = getConfigPath()): Promise<void> {
@@ -193,8 +180,4 @@ function isSeparatorStyle(value: unknown): value is SeparatorStyle {
 
 function isIconMode(value: unknown): value is IconMode {
   return typeof value === "string" && ICON_MODE_VALUES.includes(value as IconMode);
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
 }
