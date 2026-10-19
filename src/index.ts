@@ -47,9 +47,13 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
   // modules off pi's startup import path.
   let loaded: LoadedFooter | undefined;
   let loadPromise: Promise<void> | undefined;
-  // Set by the cheap enabled-flag pre-check when the config is disabled: the deferred
-  // load is skipped entirely and the footer stays cleared. Reset on session_start so a
-  // config re-enabled in a new session is picked up.
+  // Session-level latch: "the config file said disabled at first render" — NOT a live
+  // "the config is disabled" flag. Set by the cheap enabled-flag pre-check when the
+  // config is disabled (so the deferred load is skipped entirely and the footer stays
+  // cleared); reset on session_start so a config re-enabled in a new session is
+  // picked up. apply() may only honor it while the widgets have not yet loaded (`!loaded &&
+  // disabled`): if a later enable (/footer on, config change) triggers the deferred load,
+  // dropping the not-yet-loaded guard would keep hiding the already-loaded footer.
   let disabled = false;
   // A failed deferred load notifies the user once per session; later retries stay silent
   // because the footer reappearing is the recovery signal.
@@ -131,7 +135,8 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
       clearFooter(ctx);
       return;
     }
-    // The cheap pre-check found a disabled config and the deferred load was never run.
+    // See the latch declaration above: the not-yet-loaded guard is what lets a later
+    // enable of the footer take effect without waiting for a new session.
     if (!loaded && disabled) {
       clearFooter(ctx);
       return;
