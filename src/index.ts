@@ -92,13 +92,9 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
     ctx.ui.setStatus(STATUS_KEY, undefined);
   }
 
-  // Registers a footer that renders nothing until the deferred modules have loaded. The
-  // first render checks the enabled flag and either clears the footer (disabled config,
-  // no load) or starts the load; once the load finishes, the real footer is
-  // re-registered so the next frame shows it.
-  // The shell footer's first render: with a disabled config the footer is cleared and
-  // no widget module is ever imported for this session; otherwise the deferred load
-  // starts and the real footer replaces the shell once it finishes.
+  // Decide enabled/disabled before importing anything: a disabled session must cost
+  // nothing, so the widget modules are never loaded if the config says disabled.
+  // Otherwise start the deferred load; the real footer replaces the shell when it finishes.
   async function startShellBoot(
     ctx: ExtensionContext | ExtensionCommandContext,
     tui: { requestRender(): void },
