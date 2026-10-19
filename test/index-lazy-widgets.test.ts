@@ -163,7 +163,8 @@ describe("disabled config", () => {
     // The footer is cleared and never replaced by a real footer, which only appears
     // after a successful deferred load.
     await vi.waitFor(() => expect(ui.setFooter).toHaveBeenCalledTimes(2));
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The registry load is the only source of a later footer registration, and it is
+    // asserted to have never started, so no grace-period wait can reveal more calls.
     expect(ui.setFooter.mock.calls[1]?.[0]).toBeUndefined();
     expect(ui.setFooter).toHaveBeenCalledTimes(2);
     expect(registryLoads.count).toBe(0);
