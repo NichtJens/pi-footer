@@ -99,17 +99,18 @@ export default async function statuslineExtension(pi: ExtensionAPI): Promise<voi
   // Decide enabled/disabled before importing anything: a disabled session must cost
   // nothing, so the widget modules are never loaded if the config says disabled.
   // Otherwise start the deferred load; the real footer replaces the shell when it finishes.
+  // A failed load rejects before apply, so a failed boot leaves the shell in place for a
+  // render tick to retry.
   async function startShellBoot(
     ctx: ExtensionContext | ExtensionCommandContext,
     tui: { requestRender(): void },
   ): Promise<void> {
     if (await isConfigDisabled()) {
       disabled = true;
-      apply(ctx);
     } else {
       await loadDeferred();
-      apply(ctx);
     }
+    apply(ctx);
     tui.requestRender();
   }
 
